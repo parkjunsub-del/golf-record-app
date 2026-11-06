@@ -1,0 +1,257 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="골프기록">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="theme-color" content="#1b5e3b">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="apple-touch-icon" href="icon-180.png">
+<title>골프기록</title>
+<style>
+*{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+body{margin:0;font-family:-apple-system,"Apple SD Gothic Neo",sans-serif;background:#f2f4f1;color:#1c2a22;
+  padding:env(safe-area-inset-top) 0 env(safe-area-inset-bottom)}
+#app{max-width:520px;margin:0 auto;padding:14px 14px 90px}
+h1{font-size:22px;margin:8px 0 14px}
+h2{font-size:15px;margin:18px 0 8px;color:#456}
+.card{background:#fff;border-radius:14px;padding:14px;margin-bottom:12px;box-shadow:0 1px 3px #0001}
+label{display:block;font-size:13px;color:#567;margin:10px 0 4px}
+input[type=text],input[type=date]{width:100%;font-size:17px;padding:11px;border:1px solid #cdd6cf;border-radius:10px;background:#fff}
+.row{display:flex;gap:8px;flex-wrap:wrap}
+.btn{flex:1;min-width:0;font-size:17px;padding:14px 6px;border:1.5px solid #cdd6cf;background:#fff;border-radius:12px;color:#1c2a22;text-align:center}
+.btn.on{background:#1b5e3b;border-color:#1b5e3b;color:#fff;font-weight:700}
+.btn.warn.on{background:#b3452c;border-color:#b3452c}
+.btn.primary{background:#1b5e3b;color:#fff;border-color:#1b5e3b;font-weight:700}
+.btn.ghost{background:transparent}
+.btn.sm{font-size:14px;padding:9px 6px;flex:none;padding-left:12px;padding-right:12px}
+.btn:disabled{opacity:.35}
+.parrow{display:grid;grid-template-columns:repeat(6,1fr);gap:6px}
+.parcell{border:1.5px solid #cdd6cf;border-radius:10px;padding:6px 0;text-align:center;background:#fff}
+.parcell small{display:block;font-size:11px;color:#789}
+.parcell b{font-size:20px}
+.top{display:flex;align-items:center;justify-content:space-between;margin-bottom:6px}
+.holeno{font-size:34px;font-weight:800}
+.holeno span{font-size:16px;font-weight:600;color:#567;margin-left:8px}
+.dots{display:grid;grid-template-columns:repeat(18,1fr);gap:3px;margin:8px 0 14px}
+.dot{height:8px;border-radius:4px;background:#d5ddd7}
+.dot.done{background:#1b5e3b}.dot.now{background:#e0a100}
+.nav{position:fixed;left:0;right:0;bottom:0;background:#fffe;backdrop-filter:blur(8px);padding:10px 14px calc(10px + env(safe-area-inset-bottom));border-top:1px solid #dde}
+.nav .in{max-width:520px;margin:0 auto;display:flex;gap:8px}
+.info{font-size:14px;color:#456;padding:6px 2px}
+.tag{display:inline-block;padding:2px 8px;border-radius:8px;background:#e6efe9;font-size:12px;margin-left:6px}
+table{width:100%;border-collapse:collapse;font-size:14px}
+td,th{padding:6px 4px;border-bottom:1px solid #eee;text-align:right}
+td:first-child,th:first-child{text-align:left}
+.rnd{display:flex;flex-direction:column;gap:8px}
+.muted{color:#789;font-size:13px}
+</style>
+</head>
+<body>
+<div id="app"></div>
+<script>
+const $app = document.getElementById('app');
+const load = (k, d) => { try { return JSON.parse(localStorage.getItem(k)) ?? d } catch { return d } };
+const save = (k, v) => localStorage.setItem(k, JSON.stringify(v));
+const esc = s => String(s ?? '').replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+
+let rounds = load('golf.rounds', []);
+let courses = load('golf.courses', {});       // 골프장명 -> [18개 파]
+let cur = null;                                // 진행 중인 라운드
+let hi = 0;                                    // 현재 홀 index
+let screen = 'home';
+let draft = null;                              // 새 라운드 설정 중 데이터
+
+const REL_LABEL = {'-2':'이글','-1':'버디','0':'파','1':'보기','2':'더블','3':'트리플','4':'쿼드','5':'+5'};
+const DRV_LABEL = {F:'페어웨이', R:'러프', B:'벙커', X:'실패(OB 등)'};
+const today = () => { const d = new Date(); return new Date(d - d.getTimezoneOffset()*6e4).toISOString().slice(0,10) };
+const newHole = () => ({drv:null, gir:null, putts:null, rel:null, pen:0});
+
+function persist(){ save('golf.rounds', rounds); save('golf.courses', courses); }
+function isDone(r, i){ const h = r.holes[i], p = r.pars[i];
+  return h.rel !== null && h.putts !== null && h.gir !== null && (p === 3 || h.drv !== null); }
+function scmOf(h){ return h.gir === false && h.rel !== null ? (h.rel <= 0 ? 1 : 0) : null; }
+
+// ---------- 화면: 홈 ----------
+function home(){
+  screen = 'home';
+  const list = rounds.slice().sort((a,b)=> b.date.localeCompare(a.date) || b.id.localeCompare(a.id)).map(r=>{
+    const n = r.holes.filter((_,i)=>isDone(r,i)).length;
+    const tot = r.holes.reduce((s,h,i)=> isDone(r,i) ? s + r.pars[i] + h.rel : s, 0);
+    return `<div class="card"><b>${esc(r.date)} · ${esc(r.course)}</b>
+      <div class="muted">${n}/18홀 입력${n? ' · '+tot+'타':''}${r.partners? ' · 동반자 '+esc(r.partners):''}</div>
+      <div class="row" style="margin-top:10px">
+        <button class="btn sm primary" data-act="resume" data-id="${r.id}">${n<18?'이어서 입력':'보기/수정'}</button>
+        <button class="btn sm" data-act="exportOne" data-id="${r.id}">내보내기</button>
+        <button class="btn sm ghost" data-act="del" data-id="${r.id}">삭제</button></div></div>`;
+  }).join('');
+  $app.innerHTML = `<h1>⛳ 골프기록</h1>
+    <button class="btn primary" style="width:100%" data-act="newRound">새 라운드 시작</button>
+    <h2>라운드 목록</h2>${list || '<div class="muted">아직 기록이 없습니다.</div>'}
+    ${rounds.length ? `<button class="btn" style="width:100%;margin-top:6px" data-act="exportAll">전체 라운드 내보내기 (CSV)</button>
+    <div class="muted" style="margin-top:8px">내보내기 → 공유 시트에서 AirDrop → Mac 선택. 같은 라운드를 여러 번 보내도 중복 반영되지 않습니다.</div>` : ''}`;
+}
+
+// ---------- 화면: 라운드 설정 ----------
+function setupScreen(){
+  screen = 'setup';
+  const names = Object.keys(courses);
+  $app.innerHTML = `<h1>새 라운드</h1><div class="card">
+    <label>골프장</label><input type="text" id="course" list="courselist" value="${esc(draft.course)}" placeholder="골프장 이름">
+    <datalist id="courselist">${names.map(n=>`<option value="${esc(n)}">`).join('')}</datalist>
+    <label>라운딩 일자</label><input type="date" id="date" value="${esc(draft.date)}">
+    <label>동반자 (쉼표로 구분)</label><input type="text" id="partners" value="${esc(draft.partners)}">
+    <label>캐디 이름</label><input type="text" id="caddie" value="${esc(draft.caddie)}">
+  </div>
+  <h2>홀별 파 (탭하면 3→4→5 순환)</h2>
+  <div class="card"><div class="parrow">${draft.pars.map((p,i)=>
+    `<div class="parcell" data-act="togPar" data-i="${i}"><small>${i+1}번</small><b>${p}</b></div>`).join('')}</div>
+    <div class="muted" style="margin-top:8px">파 합계 ${draft.pars.reduce((a,b)=>a+b,0)} · 골프장별로 저장되어 다음에 자동으로 불러옵니다.</div></div>
+  <div class="row"><button class="btn ghost" data-act="home">취소</button>
+  <button class="btn primary" data-act="startRound">시작</button></div>`;
+  document.getElementById('course').addEventListener('change', e=>{
+    readSetup(); const p = courses[draft.course]; if (p) draft.pars = p.slice(); setupScreen(); });
+}
+function readSetup(){
+  for (const k of ['course','date','partners','caddie']) { const el = document.getElementById(k); if (el) draft[k] = el.value.trim(); }
+}
+
+// ---------- 화면: 홀 입력 ----------
+function holeScreen(){
+  screen = 'hole';
+  const par = cur.pars[hi], h = cur.holes[hi];
+  const relMax = par === 3 ? 3 : 4;
+  const rels = []; for (let r=-2; r<=relMax; r++) rels.push(r);
+  const grp = (k, items, cls='') => `<div class="row">${items.map(([v,l])=>
+    `<button class="btn ${h[k]===v?'on '+cls:''}" data-act="set" data-k="${k}" data-v="${v}">${l}</button>`).join('')}</div>`;
+  const scm = scmOf(h);
+  $app.innerHTML = `
+    <div class="top"><div class="holeno">${hi+1}번홀<span>PAR ${par}</span></div>
+      <button class="btn sm ghost" data-act="finish">종료/요약</button></div>
+    <div class="dots">${cur.pars.map((_,i)=>`<div class="dot ${i===hi?'now':isDone(cur,i)?'done':''}"></div>`).join('')}</div>
+    ${par>3 ? `<div class="card"><label style="margin-top:0">드라이버 (생존 시 낙구 지점)</label>
+      ${grp('drv', [['F','페어웨이'],['R','러프'],['B','벙커']])}
+      <div style="height:8px"></div>${grp('drv', [['X','실패 (OB·해저드 등)']], 'warn')}</div>` : ''}
+    <div class="card"><label style="margin-top:0">GIR (${par===3?'1':par===4?'2':'3'}타 만에 온그린)</label>
+      ${grp('gir', [[true,'성공'],[false,'실패']])}
+      ${h.gir===false ? `<div class="info">SCM(파 세이브): ${scm===null?'-':scm?'<b>성공</b>':'실패'}<span class="tag">스코어로 자동 판정</span></div>`:''}</div>
+    <div class="card"><label style="margin-top:0">퍼팅 수</label>
+      ${grp('putts', [0,1,2,3,4,5].map(n=>[n, n===5?'5+':n]))}</div>
+    <div class="card"><label style="margin-top:0">홀 스코어 (파 대비)</label>
+      <div class="row">${rels.map(r=>`<button class="btn ${h.rel===r?'on':''}" data-act="set" data-k="rel" data-v="${r}">
+        ${r>0?'+'+r:r}<br><small style="font-size:11px">${REL_LABEL[r]}</small></button>`).join('')}</div></div>
+    <div class="card"><label style="margin-top:0">페널티 타수 (OB·해저드 등, 스코어에 포함됨)</label>
+      <div class="row" style="align-items:center">
+        <button class="btn sm" data-act="pen" data-d="-1">−</button>
+        <div style="flex:1;text-align:center;font-size:22px;font-weight:700">${h.pen}</div>
+        <button class="btn sm" data-act="pen" data-d="1">＋</button></div></div>
+    <div class="nav"><div class="in">
+      <button class="btn" data-act="prev" ${hi===0?'disabled':''}>◀ 이전</button>
+      <button class="btn primary" data-act="next">${hi===17?'완료 ▶':'다음 ▶'}</button></div></div>`;
+}
+
+// ---------- 통계 / 요약 ----------
+function stats(r){
+  const idx = r.holes.map((_,i)=>i).filter(i=>isDone(r,i));
+  const H = idx.map(i=>({...r.holes[i], par:r.pars[i]}));
+  const d = H.filter(h=>h.par>=4), n = H.length;
+  const gir = H.filter(h=>h.gir).length, fail = n - gir;
+  const scm = H.filter(h=>scmOf(h)===1).length;
+  const pct = (a,b)=> b ? (a/b*100).toFixed(1)+'%' : '-';
+  return {n, strokes:H.reduce((s,h)=>s+h.par+h.rel,0), putts:H.reduce((s,h)=>s+h.putts,0),
+    drvN:d.length, surv:d.filter(h=>h.drv!=='X').length, fw:d.filter(h=>h.drv==='F').length,
+    gir, fail, scm, pct, pen:H.reduce((s,h)=>s+h.pen,0), three:H.filter(h=>h.putts>=3).length,
+    parSave:H.filter(h=>h.rel<=0).length};
+}
+function summary(){
+  screen = 'summary';
+  const s = stats(cur), p = s.pct;
+  const vsPar = cur.pars.reduce((a,b,i)=> isDone(cur,i)? a+b : a, 0);
+  const rows = [
+    ['입력 홀', s.n+' / 18'],
+    ['전체 타수', s.strokes + (s.n? ` (${s.strokes-vsPar>0?'+':''}${s.strokes-vsPar})`:'')],
+    ['드라이버 생존', `${s.surv}/${s.drvN} (${p(s.surv,s.drvN)})`],
+    ['페어웨이 적중', `${s.fw}/${s.drvN} (${p(s.fw,s.drvN)})`],
+    ['GIR', `${s.gir}/${s.n} (${p(s.gir,s.n)})`],
+    ['SCM', `${s.scm}/${s.fail} (${p(s.scm,s.fail)})`],
+    ['전체 퍼팅', s.putts],
+    ['홀당 평균 퍼팅', s.n ? (s.putts/s.n).toFixed(2) : '-'],
+    ['3퍼트 이상', s.three],
+    ['파 세이브(파 이하)', `${s.parSave}/${s.n}`],
+    ['페널티 타수', s.pen]];
+  $app.innerHTML = `<h1>${esc(cur.course)}</h1><div class="muted">${esc(cur.date)}${cur.partners?' · '+esc(cur.partners):''}${cur.caddie?' · 캐디 '+esc(cur.caddie):''}</div>
+    <div class="card" style="margin-top:12px"><table>${rows.map(([a,b])=>`<tr><td>${a}</td><td><b>${b}</b></td></tr>`).join('')}</table></div>
+    <div class="row"><button class="btn" data-act="goHole" data-i="${Math.max(0,cur.holes.findIndex((_,i)=>!isDone(cur,i)))}">홀 입력으로</button>
+    <button class="btn primary" data-act="exportOne" data-id="${cur.id}">내보내기 (AirDrop)</button></div>
+    <button class="btn ghost" style="width:100%;margin-top:10px" data-act="home">홈으로</button>`;
+}
+
+// ---------- CSV 내보내기 ----------
+function csvOf(list){
+  const q = v => '"' + String(v ?? '').replace(/"/g,'""') + '"';
+  const out = ['round_id,date,course,partners,caddie,hole,par,drive,gir,scm,putts,rel,penalty'];
+  let skipped = 0;
+  for (const r of list) r.holes.forEach((h,i)=>{
+    if (!isDone(r,i)) { skipped++; return; }
+    const scm = scmOf(h);
+    out.push([r.id, r.date, r.course, r.partners, r.caddie, i+1, r.pars[i], r.pars[i]===3?'':h.drv,
+      h.gir?1:0, scm===null?'':scm, h.putts, h.rel, h.pen].map(q).join(','));
+  });
+  return {text: out.join('\n'), skipped};
+}
+async function doExport(list, name){
+  const {text, skipped} = csvOf(list);
+  if (skipped && !confirm(`입력이 덜 된 ${skipped}개 홀은 제외됩니다. 계속할까요?`)) return;
+  const file = new File(['﻿'+text], name, {type:'text/csv'});
+  try {
+    if (navigator.canShare && navigator.canShare({files:[file]})) { await navigator.share({files:[file], title:name}); return; }
+  } catch (e) { if (e.name === 'AbortError') return; }
+  const a = document.createElement('a'); a.href = URL.createObjectURL(file); a.download = name; a.click();
+}
+
+// ---------- 이벤트 ----------
+document.addEventListener('click', e=>{
+  const t = e.target.closest('[data-act]'); if (!t) return;
+  const act = t.dataset.act;
+  const byId = id => rounds.find(r=>r.id===id);
+  if (act === 'home') return home();
+  if (act === 'newRound') { draft = {course:'', date:today(), partners:'', caddie:'', pars:Array(18).fill(4)}; return setupScreen(); }
+  if (act === 'togPar') { readSetup(); const i=+t.dataset.i; draft.pars[i] = draft.pars[i]===5 ? 3 : draft.pars[i]+1; return setupScreen(); }
+  if (act === 'startRound') {
+    readSetup();
+    if (!draft.course) return alert('골프장 이름을 입력하세요.');
+    courses[draft.course] = draft.pars.slice();
+    cur = {id: draft.date.replace(/-/g,'') + '-' + Date.now().toString(36), date:draft.date, course:draft.course,
+      partners:draft.partners, caddie:draft.caddie, pars:draft.pars.slice(), holes:Array.from({length:18}, newHole)};
+    rounds.push(cur); persist(); hi = 0; return holeScreen();
+  }
+  if (act === 'resume') { cur = byId(t.dataset.id); hi = Math.max(0, cur.holes.findIndex((_,i)=>!isDone(cur,i))); return holeScreen(); }
+  if (act === 'del') { if (confirm('이 라운드를 삭제할까요? (복구 불가)')) { rounds = rounds.filter(r=>r.id!==t.dataset.id); persist(); home(); } return; }
+  if (act === 'exportOne') { const r = byId(t.dataset.id); return doExport([r], `golf_${r.date}_${r.course.replace(/\s+/g,'-')}.csv`); }
+  if (act === 'exportAll') return doExport(rounds, `golf_all_${today()}.csv`);
+  if (act === 'goHole') { hi = +t.dataset.i; return holeScreen(); }
+  if (act === 'finish') return summary();
+  if (act === 'set') {
+    const k = t.dataset.k; let v = t.dataset.v;
+    v = (k==='gir') ? v==='true' : (k==='drv') ? v : +v;
+    const h = cur.holes[hi]; h[k] = (h[k] === v) ? null : v;
+    persist();
+    // 입력이 모두 끝나면 자동으로 다음 홀 (마지막 홀 제외)
+    const done = isDone(cur, hi);
+    holeScreen();
+    if (done && (k==='rel') && hi < 17) { setTimeout(()=>{ hi++; holeScreen(); window.scrollTo(0,0); }, 250); }
+    return;
+  }
+  if (act === 'pen') { const h = cur.holes[hi]; h.pen = Math.max(0, Math.min(9, h.pen + +t.dataset.d)); persist(); return holeScreen(); }
+  if (act === 'prev') { if (hi>0) { hi--; holeScreen(); window.scrollTo(0,0); } return; }
+  if (act === 'next') { if (hi<17) { hi++; holeScreen(); window.scrollTo(0,0); } else summary(); return; }
+});
+
+home();
+if ('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js').catch(()=>{});
+</script>
+</body>
+</html>
